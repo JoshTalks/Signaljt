@@ -11,16 +11,31 @@ from __future__ import annotations
 
 import json
 import sys
+import os
 import time
 from typing import List, Optional
 
 from . import _http
 from .auth import get_api_key
-from .errors import SignaljtError
+from .errors import ApiError, SignaljtError
 
 
 def _is_url(s) -> bool:
     return isinstance(s, str) and s.startswith(("http://", "https://"))
+
+
+def is_main_process() -> bool:
+    """True unless this is a non-zero rank under a distributed launcher.
+
+    Detects torchrun / accelerate / DeepSpeed via the standard ``RANK`` env var
+    (falling back to ``LOCAL_RANK``); returns True when neither is set. No torch
+    dependency. Use it — or ``main_process_only=True`` on submit/evaluate — to
+    avoid N duplicate submissions when scoring inside DDP training.
+    """
+    rank = os.environ.get("RANK")
+    if rank is None:
+        rank = os.environ.get("LOCAL_RANK")
+    return rank in (None, "", "0")
 
 
 class Box(dict):
@@ -200,9 +215,33 @@ def _parse_result(meta, eval_id, eval_name) -> EvalResult:
                       eval_name=eval_name or meta.get("eval_name"), result_url=url)
 
 
+def _await_by_name(eval_name, key, poll_interval, timeout) -> EvalResult:
+    """Poll the result endpoint by eval_name until a completed run appears.
+
+    Used by non-main ranks under ``ddp=True``: they don't submit — they wait for
+    the run the main process created and return the same result (read-only).
+    """
+    waited = 0.0
+    while True:
+        try:
+            meta = _http.get_eval_result(key, eval_name=eval_name)
+        except ApiError:
+            meta = None  # not registered yet (main hasn't submitted); keep waiting
+        if meta is not None:
+            status = meta.get("status")
+            if status == "completed":
+                return _parse_result(meta, meta.get("eval_id"), eval_name)
+            if status == "failed":
+                raise SignaljtError("Eval %r failed: %s" % (eval_name, meta.get("error")))
+        if waited >= timeout:
+            raise SignaljtError("Timed out after %.0fs waiting for eval %r." % (timeout, eval_name))
+        time.sleep(poll_interval)
+        waited += poll_interval
+
+
 def submit(predictions=None, *, predictions_url=None, eval_name=None,
            penalize_missing=True, tag_rows=True, strip_bracketed=False,
-           api_key=None) -> EvalJob:
+           api_key=None, main_process_only=False) -> Optional[EvalJob]:
     """Submit predictions for scoring; returns an :class:`EvalJob` (does not wait).
 
     ``predictions`` may be:
@@ -210,7 +249,13 @@ def submit(predictions=None, *, predictions_url=None, eval_name=None,
       * an http(s) URL — passed as ``predictions_url`` (no upload)
       * an in-memory ``dict`` (``{index: hypothesis}``) or ``list`` — serialized
         and uploaded
+
+    ``main_process_only=True`` submits only on the main process (rank 0) and
+    returns ``None`` on other ranks — use it under DDP so N GPUs don't create N
+    duplicate evals per call.
     """
+    if main_process_only and not is_main_process():
+        return None
     key = get_api_key(api_key)
     kw = dict(eval_name=eval_name, penalize_missing=penalize_missing,
               tag_rows=tag_rows, strip_bracketed=strip_bracketed)
@@ -228,12 +273,36 @@ def submit(predictions=None, *, predictions_url=None, eval_name=None,
 
 def evaluate(predictions=None, *, predictions_url=None, eval_name=None,
              penalize_missing=True, tag_rows=True, strip_bracketed=False,
-             api_key=None, poll_interval=3.0, timeout=1800.0, progress=False) -> EvalResult:
+             api_key=None, poll_interval=3.0, timeout=1800.0, progress=False,
+             main_process_only=False, ddp=False) -> Optional[EvalResult]:
     """Submit, wait for completion, and return the parsed :class:`EvalResult`.
 
     Synchronous — blocks until scoring finishes and returns the result. Silent
     by default; pass ``progress=True`` to print poll status to stderr.
+
+    Distributed (DDP) helpers — so N GPUs don't create N duplicate evals:
+
+    * ``ddp=True`` — the main process (rank 0) submits; every other rank fetches
+      that same run from the API by ``eval_name`` (read-only, no extra eval is
+      created). **All ranks return an identical EvalResult.** Requires
+      ``eval_name``, which must be unique per submission (e.g. include the epoch)
+      so a re-run doesn't fetch a stale run of the same name.
+    * ``main_process_only=True`` — only rank 0 submits; other ranks return
+      ``None`` (you supply your own placeholder). Lighter, but values differ.
     """
+    if ddp:
+        if not eval_name:
+            raise ValueError("ddp=True requires eval_name (used to share the result across ranks).")
+        key = get_api_key(api_key)
+        if not is_main_process():
+            return _await_by_name(eval_name, key, poll_interval, timeout)
+        job = submit(predictions, predictions_url=predictions_url, eval_name=eval_name,
+                     penalize_missing=penalize_missing, tag_rows=tag_rows,
+                     strip_bracketed=strip_bracketed, api_key=key)
+        return job.wait(poll_interval=poll_interval, timeout=timeout, progress=progress)
+
+    if main_process_only and not is_main_process():
+        return None
     job = submit(predictions, predictions_url=predictions_url, eval_name=eval_name,
                  penalize_missing=penalize_missing, tag_rows=tag_rows,
                  strip_bracketed=strip_bracketed, api_key=api_key)

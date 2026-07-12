@@ -20,7 +20,7 @@ __version__ = "0.1.0"
 
 from .auth import get_api_key, login, logout, whoami
 from .dataset import Dataset, DatasetItem, fetch_dataset, list_languages
-from .scoring import EvalJob, EvalResult, evaluate, get_result, submit
+from .scoring import EvalJob, EvalResult, evaluate, get_result, is_main_process, submit
 from .errors import (
     ApiError,
     AuthenticationError,
@@ -42,6 +42,7 @@ __all__ = [
     "submit",
     "evaluate",
     "get_result",
+    "is_main_process",
     "EvalJob",
     "EvalResult",
     "Dataset",

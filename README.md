@@ -39,6 +39,7 @@ Everything is available both as a **Python API** and a **`signaljt` CLI**.
   - [Scoring options](#scoring-options)
   - [Non-blocking submit / poll](#non-blocking-submit--poll)
   - [Logging to wandb / TensorBoard](#logging-to-wandb--tensorboard)
+  - [Distributed training (DDP)](#distributed-training-ddp)
   - [CLI: `eval` / `result`](#cli-eval--result)
 - [Using with ML frameworks](#using-with-ml-frameworks)
 - [Configuration reference](#configuration-reference)
@@ -484,6 +485,66 @@ Control what's included:
 ```python
 result.metrics(per_language=True, words=True, prefix="oiwer")
 ```
+
+### Distributed training (DDP)
+
+When you score inside distributed training (e.g. 4 GPUs), the framework runs your
+eval/metrics code on **every rank**, so a naive `evaluate()` submits the dataset
+N times — N duplicate entries per epoch. Two flags fix this.
+
+**`ddp=True` (recommended) — one submission, identical result on every rank.**
+Rank 0 submits; every other rank fetches that same run from the API by
+`eval_name` (read-only, no new entry), so all ranks return an identical
+`EvalResult`:
+
+```python
+# inside HuggingFace Trainer's compute_metrics (or any per-rank eval hook)
+def compute_metrics(pred):
+    predictions = {idx: text for idx, text in zip(indices, decode(pred))}
+    result = signaljt.evaluate(
+        predictions,
+        eval_name=f"my-run-epoch-{epoch}",
+        progress=False,
+        ddp=True,
+    )
+    return {"oiwer": result.oiwer}      # identical on every rank; ONE eval submitted
+```
+
+Requirements:
+- `eval_name` must be **identical across ranks** (derive it from the epoch/step —
+  it already is the same on all ranks).
+- `eval_name` must be **unique per submission**, so a re-run doesn't fetch a stale
+  run of the same name. Include the epoch, plus a run id if you re-use output dirs:
+  ```python
+  run_id = os.environ.get("TORCHELASTIC_RUN_ID", "")   # shared across ranks under torchrun/accelerate
+  eval_name = f"my-run-{run_id}-epoch-{epoch}"
+  ```
+
+Because the non-main ranks block until rank 0's eval completes, `ddp=True` also
+acts as a natural barrier that keeps the ranks in sync across the eval step.
+
+**`main_process_only=True` (lighter) — rank 0 submits, others get `None`.**
+No extra API calls, but you must return matching metric keys yourself so the
+trainer doesn't choke on an inconsistent dict across ranks:
+
+```python
+    result = signaljt.evaluate(predictions, eval_name=name, main_process_only=True)
+    if result is None:                       # non-main ranks
+        return {"oiwer": float("inf")}       # placeholder; non-rank-0 metrics are ignored anyway
+    return {"oiwer": result.oiwer}
+```
+
+**Detect the main process yourself:** `signaljt.is_main_process()` returns `True`
+only on rank 0.
+
+**Works with any DDP framework.** Rank detection uses only the standard
+`RANK` / `LOCAL_RANK` environment variables that `torchrun`, `accelerate launch`,
+HuggingFace `Trainer`, PyTorch Lightning, and **NeMo** all set — so `ddp=True`
+behaves the same everywhere; just call it from wherever your per-rank
+validation/metrics code runs. *(Multi-node: this relies on the global `RANK`,
+which `torchrun`/`accelerate` export. A launcher that only sets a per-node
+`LOCAL_RANK` would submit once per node — use `torchrun`/`accelerate` to avoid
+that.)*
 
 ### CLI: `eval` / `result`
 
