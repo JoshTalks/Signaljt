@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "signaljt"
+version = "0.1.0"
+description = "Python Client Library for Signal validation set"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Josh Talks" }]
+keywords = ["asr", "speech-recognition", "evaluation", "oiwer", "wer", "indic", "signal", "josh-talks"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "httpx>=0.23",
+    "filelock>=3.4",
+]
+
+[project.optional-dependencies]
+notebook = ["ipywidgets>=7.6"]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/joshtalks/signaljt"
+Repository = "https://github.com/joshtalks/signaljt"
+Issues = "https://github.com/joshtalks/signaljt/issues"
+
+[project.scripts]
+signaljt = "signaljt.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["signaljt*"]

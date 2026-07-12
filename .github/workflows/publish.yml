@@ -1,0 +1,27 @@
+name: Publish to PyPI
+
+# Runs whenever you push a version tag (e.g. v0.1.1). `release.py` creates and
+# pushes these tags, so a release becomes: `python release.py patch`.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}   # allow manual runs from the Actions tab
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write     # required for PyPI Trusted Publishing (OIDC); no token needed
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
