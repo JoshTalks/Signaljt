@@ -16,7 +16,7 @@ Scoring:  submit predictions, get overall + per-language + per-chunk OI-WER.
 """
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .auth import get_api_key, login, logout, whoami
 from .dataset import Dataset, DatasetItem, fetch_dataset, list_languages
